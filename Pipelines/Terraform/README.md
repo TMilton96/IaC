@@ -89,43 +89,7 @@ This pipeline uses a self-hosted agent pool named **ADO_Agent** with Terraform p
    - Select specific users/groups who can approve
    - Configure timeout and retry settings
 
-### 5. Configure Microsoft Teams Webhook
-
-This pipeline sends approval notifications to Microsoft Teams. Follow these steps to set up the webhook:
-
-1. **In Microsoft Teams**:
-   - Open the Teams channel where you want to receive notifications
-   - Click the **•••** (more options) next to the channel name
-   - Select **Connectors** (or **Workflows** in newer Teams)
-   - Search for **Incoming Webhook**
-   - Click **Add** or **Configure**
-   - Give it a name (e.g., "Terraform Approvals")
-   - Optionally upload a custom image
-   - Click **Create**
-   - **Copy the webhook URL** - you'll need this for the pipeline
-
-2. **Store the Webhook URL Securely** (Recommended):
-   - In Azure DevOps, go to **Pipelines** → **Library**
-   - Create a new **Variable Group** named `Terraform-Notifications`
-   - Add a variable named `teamsWebhookUrl`
-   - Paste your webhook URL as the value
-   - Click the lock icon to make it a secret
-   - Save the variable group
-
-3. **Update Pipeline to Use Variable Group** (if using Library):
-   ```yaml
-   variables:
-     - group: Terraform-Notifications
-     # ... other variables
-   ```
-
-4. **Test Your Webhook** (Optional but Recommended):
-   - Use the included `test-teams-webhook.ps1` script
-   - Update the webhook URL in the script
-   - Run: `.\test-teams-webhook.ps1`
-   - Verify you receive a test message in Teams
-
-### 6. Update Pipeline Variables
+### 5. Update Pipeline Variables
 
 Edit `azure-pipelines.yml` and replace the following placeholders:
 
@@ -248,23 +212,6 @@ This pipeline implements several security best practices:
 5. **Service Principal**: Uses managed identity for Azure authentication
 6. **Least Privilege**: Service connection should have minimal required permissions
 7. **Secure Webhook Storage**: Teams webhook URL stored as a secret in ADO Library
-
-## Repository Structure
-
-```
-.
-├── azure-pipelines.yml
-├── test-teams-webhook.ps1
-├── IaC/
-│   └── Terraform/
-│       ├── Application/
-│       │   └── main.tf
-│       ├── Common/
-│       │   └── main.tf
-│       └── Networking/
-│           └── main.tf
-└── README.md
-```
 
 ## Troubleshooting
 
