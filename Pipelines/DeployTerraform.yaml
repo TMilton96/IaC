@@ -1,0 +1,177 @@
+# Azure DevOps Pipeline for Terraform Deployment
+# This pipeline supports deployment of multiple Terraform environments with approval gates
+
+trigger: none  # Manual triggers only for safety
+
+parameters:
+  - name: terraformDirectory
+    displayName: 'Select Terraform Directory'
+    type: string
+    default: 'Application'
+    values:
+      - Application
+      - Common
+      - Networking
+  
+  - name: action
+    displayName: 'Terraform Action'
+    type: string
+    default: 'plan'
+    values:
+      - plan
+      - apply
+
+  - name: environment
+    displayName: 'Environment' 
+    type: string
+    default: dev
+    values:
+      - dev
+      - qa
+      - prod
+
+variables:
+  - name: terraformVersion
+    value: 'latest'
+  - name: workingDirectory
+    value: 'IaC/Terraform/${{ parameters.terraformDirectory }}'
+  - name: serviceConnection
+    value: '<service_connection>'  # Replace with your Azure service connection name
+  - name: backendResourceGroup
+    value: '<backend_resource_group>'  # Replace with your backend resource group
+  - name: backendStorageAccount
+    value: '<backend_storage_account>'  # Replace with your backend storage account
+  - name: backendContainerName
+    value: 'tfstate'
+  - name: backendKey
+    value: '${{ parameters.terraformDirectory }}.tfstate'
+
+stages:
+  - stage: TerraformValidate
+    displayName: 'Validate Terraform Configuration'
+    jobs:
+      - job: Validate
+        displayName: 'Terraform Validate & Format Check'
+        pool:
+          name: 'ADO_Agent' # This is a self hosted agent. Change based on needs. (may require Terraform install depending on use case)
+        steps:
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(workingDirectory)'
+              backendServiceArm: '$(serviceConnection)'
+              backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+              backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+              backendAzureRmContainerName: '$(backendContainerName)'
+              backendAzureRmKey: '$(backendKey)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Validate'
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: '$(workingDirectory)'
+
+          - script: |
+              terraform fmt -check -recursive
+            displayName: 'Terraform Format Check'
+            workingDirectory: '$(workingDirectory)'
+            continueOnError: true
+
+  - stage: TerraformPlan
+    displayName: 'Terraform Plan'
+    dependsOn: TerraformValidate
+    condition: succeeded() # Runs Plan stage dependent on a successful Validation stage
+    jobs:
+      - job: Plan
+        displayName: 'Generate Terraform Plan'
+        pool:
+          name: 'ADO_Agent'
+        steps:
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(workingDirectory)'
+              backendServiceArm: '$(serviceConnection)'
+              backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+              backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+              backendAzureRmContainerName: '$(backendContainerName)'
+              backendAzureRmKey: '$(backendKey)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Plan'
+            inputs:
+              provider: 'azurerm'
+              command: 'plan'
+              workingDirectory: '$(workingDirectory)'
+              environmentServiceNameAzureRM: '$(serviceConnection)'
+              commandOptions: 
+                - '-out=$(Build.ArtifactStagingDirectory)/tfplan' # Output plan file to Artifact staging directory
+                - '-var-file="../vars/${{ parameters.environment }}/{{ parameters.environment }}.${{ parameters.terraformDirectory }}.tfvars"'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Terraform Plan'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/tfplan'
+              artifact: 'tfplan-${{ parameters.terraformDirectory }}'
+              publishLocation: 'pipeline'
+
+          - script: |
+              echo "##[section]Terraform Plan Summary for ${{ parameters.terraformDirectory }}"
+              echo "##[warning]Review the plan output above before approving apply stage"
+            displayName: 'Plan Summary'
+
+  - stage: TerraformApply
+    displayName: 'Terraform Apply (Requires Approval)'
+    dependsOn: TerraformPlan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: Apply
+        displayName: 'Apply Terraform Changes'
+        pool:
+          name: 'ADO_Agent' 
+        environment: 'Terraform-Production'  # This environment should have approval gates configured in ADO
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Terraform Plan'
+                  inputs:
+                    artifactName: 'tfplan-${{ parameters.terraformDirectory }}'
+                    targetPath: '$(Pipeline.Workspace)/tfplan'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: '$(workingDirectory)'
+                    backendServiceArm: '$(serviceConnection)'
+                    backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+                    backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+                    backendAzureRmContainerName: '$(backendContainerName)'
+                    backendAzureRmKey: '$(backendKey)'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    workingDirectory: '$(workingDirectory)'
+                    environmentServiceNameAzureRM: '$(serviceConnection)'
+                    commandOptions: '$(Pipeline.Workspace)/tfplan/tfplan'
+
+                - script: |
+                    echo "##[section]Terraform Apply Completed Successfully"
+                    echo "##[command]Environment: ${{ parameters.terraformDirectory }}"
+                    echo "##[command]State file: $(backendKey)"
+                  displayName: 'Apply Summary'
